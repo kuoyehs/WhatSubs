@@ -137,6 +137,9 @@ default-features = false
 git = 'https://github.com/paritytech/substrate.git'
 rev = '9ded493bac83f9d2a66e6afce068e2ead2bd20ab'
 
+[dev-dependencies]
+rand="*"
+
 [features]
 default = ['std']
 std = [
