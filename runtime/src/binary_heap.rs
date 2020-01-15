@@ -1,5 +1,5 @@
 #![allow(unused_imports)]
-
+#![allow(dead_code)]
 use sp_std::{vec::Vec, result::Result};
 use frame_support::{Parameter, StorageMap, StorageValue, ensure};
 use sp_runtime::traits::{SimpleArithmetic, Bounded};

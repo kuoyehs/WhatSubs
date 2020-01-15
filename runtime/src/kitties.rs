@@ -1,9 +1,10 @@
 use frame_support::{
 	decl_module, decl_storage, decl_event, decl_error, ensure, StorageValue, StorageMap,
 	Parameter, traits::{Randomness, Currency, ExistenceRequirement},
+	weights::SimpleDispatchInfo,
 };
 use sp_runtime::{traits::{SimpleArithmetic, Bounded, Member}, DispatchError};
-use codec::{Encode, EncodeLike, Decode, Output, Input};
+use codec::{Encode, Decode};
 use sp_io::hashing::blake2_128;
 use system::ensure_signed;
 use sp_std::result;
@@ -18,20 +19,14 @@ pub trait Trait: system::Trait {
 
 type BalanceOf<T> = <<T as Trait>::Currency as Currency<<T as system::Trait>::AccountId>>::Balance;
 
-pub struct Kitty(pub [u8; 16]);
+// TODO 改为注入方式
+const MAX_BREEDING_AGE: u32 = 40;
 
-impl Encode for Kitty {
-	fn encode_to<T: Output>(&self, output: &mut T) {
-		output.push(&self.0);
-	}
-}
-
-impl EncodeLike for Kitty {}
-
-impl Decode for Kitty {
-	fn decode<I: Input>(input: &mut I) -> Result<Self, codec::Error> {
-		Ok(Kitty(Decode::decode(input)?))
-	}
+#[derive(Encode, Decode)]
+pub struct Kitty<T> where T: Trait {
+	pub dna: [u8; 16],
+	pub birthday: T::BlockNumber,
+	pub life: T::BlockNumber,
 }
 
 type KittyLinkedItem<T> = LinkedItem<<T as Trait>::KittyIndex>;
@@ -40,7 +35,7 @@ type OwnedKittiesList<T> = LinkedList<OwnedKitties<T>, <T as system::Trait>::Acc
 decl_storage! {
 	trait Store for Module<T: Trait> as Kitties {
 		/// Stores all the kitties, key is the kitty id / index
-		pub Kitties get(fn kitties): map T::KittyIndex => Option<Kitty>;
+		pub Kitties get(fn kitties): map T::KittyIndex => Option<Kitty<T>>;
 		/// Stores the total number of kitties. i.e. the next kitty index
 		pub KittiesCount get(fn kitties_count): T::KittyIndex;
 
@@ -86,77 +81,50 @@ decl_module! {
 		fn deposit_event() = default;
 
 		/// Create a new kitty
+		#[weight = SimpleDispatchInfo::FixedNormal(10_000)]
 		pub fn create(origin) {
 			let sender = ensure_signed(origin)?;
-			let kitty_id = Self::next_kitty_id()?;
-
-			// Generate a random 128bit value
-			let dna = Self::random_value(&sender);
-
-			// Create and store kitty
-			let kitty = Kitty(dna);
-			Self::insert_kitty(&sender, kitty_id, kitty);
-
-			Self::deposit_event(RawEvent::Created(sender, kitty_id));
+			Self::create_kitty(&sender)?;
 		}
 
 		/// Breed kitties
+		#[weight = SimpleDispatchInfo::FixedNormal(10_000)]
 		pub fn breed(origin, kitty_id_1: T::KittyIndex, kitty_id_2: T::KittyIndex) {
 			let sender = ensure_signed(origin)?;
-
 			let new_kitty_id = Self::do_breed(&sender, kitty_id_1, kitty_id_2)?;
-
 			Self::deposit_event(RawEvent::Created(sender, new_kitty_id));
 		}
 
 		/// Transfer a kitty to new owner
- 		pub fn transfer(origin, to: T::AccountId, kitty_id: T::KittyIndex) {
- 			let sender = ensure_signed(origin)?;
-
-  			ensure!(<OwnedKitties<T>>::exists((&sender, Some(kitty_id))), Error::<T>::RequiresOwner);
-
+		#[weight = SimpleDispatchInfo::FixedNormal(10_000)]
+		pub fn transfer(origin, to: T::AccountId, kitty_id: T::KittyIndex) {
+			let sender = ensure_signed(origin)?;
+			ensure!(<OwnedKitties<T>>::exists((&sender, Some(kitty_id))), Error::<T>::RequiresOwner);
 			Self::do_transfer(&sender, &to, kitty_id);
-
 			Self::deposit_event(RawEvent::Transferred(sender, to, kitty_id));
 		}
 
 		/// Set a price for a kitty for sale
-		/// None to delist the kitty
+		/// None to delete the kitty
+		#[weight = SimpleDispatchInfo::FixedNormal(10_000)]
 		pub fn ask(origin, kitty_id: T::KittyIndex, price: Option<BalanceOf<T>>) {
 			let sender = ensure_signed(origin)?;
-
-			ensure!(<OwnedKitties<T>>::exists((&sender, Some(kitty_id))), Error::<T>::RequiresOwner);
-
-			if let Some(ref price) = price {
-				<KittyPrices<T>>::insert(kitty_id, price);
-			} else {
-				<KittyPrices<T>>::remove(kitty_id);
-			}
-
-			Self::deposit_event(RawEvent::Ask(sender, kitty_id, price));
+			Self::ask_kitty(&sender, kitty_id, price)?;
 		}
 
+		#[weight = SimpleDispatchInfo::FixedNormal(10_000)]
 		pub fn buy(origin, kitty_id: T::KittyIndex, price: BalanceOf<T>) {
 			let sender = ensure_signed(origin)?;
-
-			let owner = Self::kitty_owner(kitty_id);
-			ensure!(owner.is_some(), Error::<T>::InvalidKittyId);
-			let owner = owner.unwrap();
-
-			let kitty_price = Self::kitty_price(kitty_id);
-			ensure!(kitty_price.is_some(), Error::<T>::KittyNotForSale);
-
-			let kitty_price = kitty_price.unwrap();
-			ensure!(price >= kitty_price, Error::<T>::PriceTooLow);
-
-			T::Currency::transfer(&sender, &owner, kitty_price, ExistenceRequirement::KeepAlive)?;
-
-			<KittyPrices<T>>::remove(kitty_id);
-
-			Self::do_transfer(&owner, &sender, kitty_id);
-
-			Self::deposit_event(RawEvent::Sold(owner, sender, kitty_id, kitty_price));
+			Self::buy_kitty(&sender, kitty_id, price)?;
 		}
+
+		#[weight = SimpleDispatchInfo::FixedNormal(10_000)]
+		fn on_initialize(_n: T::BlockNumber) { }
+
+		#[weight = SimpleDispatchInfo::FixedNormal(10_000)]
+		fn on_finalize(_n: T::BlockNumber) { }
+
+		fn offchain_worker(n: T::BlockNumber) { Self::kitty_worker(n); }
 	}
 }
 
@@ -165,6 +133,22 @@ fn combine_dna(dna1: u8, dna2: u8, selector: u8) -> u8 {
 }
 
 impl<T: Trait> Module<T> {
+	fn kitty_worker(n: T::BlockNumber) {}
+
+	fn create_kitty(sender: &T::AccountId) -> result::Result<(), DispatchError> {
+		let kitty_id = Self::next_kitty_id()?;
+
+		// Generate a random 128bit value
+		let dna = Self::random_value(sender);
+
+		// Create and store kitty
+		let kitty = Kitty { dna, life: 0u8.into(), birthday: 0u8.into() };
+		Self::insert_kitty(sender, kitty_id, kitty);
+
+		Self::deposit_event(RawEvent::Created(sender.clone(), kitty_id));
+		Ok(())
+	}
+
 	//noinspection RsUnresolvedReference
 	fn random_value(sender: &T::AccountId) -> [u8; 16] {
 		let payload = (
@@ -189,13 +173,50 @@ impl<T: Trait> Module<T> {
 	}
 
 	//noinspection RsBorrowChecker
-	fn insert_kitty(owner: &T::AccountId, kitty_id: T::KittyIndex, kitty: Kitty) {
+	fn insert_kitty(owner: &T::AccountId, kitty_id: T::KittyIndex, kitty: Kitty<T>) {
 		// Create and store kitty
 		<Kitties<T>>::insert(kitty_id, kitty);
 		<KittiesCount<T>>::put(kitty_id + 1.into());
 		<KittyOwners<T>>::insert(kitty_id, owner.clone());
 
 		Self::insert_owned_kitty(owner, kitty_id);
+	}
+
+	//noinspection RsBorrowChecker
+	fn ask_kitty(sender: &T::AccountId, kitty_id: T::KittyIndex, price: Option<BalanceOf<T>>) -> result::Result<(), DispatchError> {
+		ensure!(<OwnedKitties<T>>::exists((sender, Some(kitty_id))), Error::<T>::RequiresOwner);
+
+		if let Some(ref price) = price {
+			<KittyPrices<T>>::insert(kitty_id, price);
+		} else {
+			<KittyPrices<T>>::remove(kitty_id);
+		}
+
+		Self::deposit_event(RawEvent::Ask(sender.clone(), kitty_id, price));
+		Ok(())
+	}
+
+	//noinspection RsBorrowChecker
+	fn buy_kitty(sender: &T::AccountId, kitty_id: T::KittyIndex, price: BalanceOf<T>) -> result::Result<(), DispatchError> {
+		let owner = Self::kitty_owner(kitty_id);
+		ensure!(owner.is_some(), Error::<T>::InvalidKittyId);
+		let owner = owner.unwrap();
+
+		let kitty_price = Self::kitty_price(kitty_id);
+		ensure!(kitty_price.is_some(), Error::<T>::KittyNotForSale);
+
+		let kitty_price = kitty_price.unwrap();
+		ensure!(price >= kitty_price, Error::<T>::PriceTooLow);
+
+		T::Currency::transfer(&sender, &owner, kitty_price, ExistenceRequirement::KeepAlive)?;
+
+		<KittyPrices<T>>::remove(kitty_id);
+
+		Self::do_transfer(&owner, &sender, kitty_id);
+
+		Self::deposit_event(RawEvent::Sold(owner, sender.clone(), kitty_id, kitty_price));
+
+		Ok(())
 	}
 
 	fn do_breed(sender: &T::AccountId, kitty_id_1: T::KittyIndex, kitty_id_2: T::KittyIndex) -> result::Result<T::KittyIndex, DispatchError> {
@@ -210,8 +231,8 @@ impl<T: Trait> Module<T> {
 
 		let kitty_id = Self::next_kitty_id()?;
 
-		let kitty1_dna = kitty1.unwrap().0;
-		let kitty2_dna = kitty2.unwrap().0;
+		let kitty1_dna = kitty1.unwrap().dna;
+		let kitty2_dna = kitty2.unwrap().dna;
 
 		// Generate a random 128bit value
 		let selector = Self::random_value(&sender);
@@ -222,7 +243,7 @@ impl<T: Trait> Module<T> {
 			new_dna[i] = combine_dna(kitty1_dna[i], kitty2_dna[i], selector[i]);
 		}
 
-		Self::insert_kitty(sender, kitty_id, Kitty(new_dna));
+		Self::insert_kitty(sender, kitty_id, Kitty { dna: new_dna, life: 0u8.into(), birthday: 0u8.into() });
 
 		Ok(kitty_id)
 	}
@@ -233,6 +254,8 @@ impl<T: Trait> Module<T> {
 		<OwnedKittiesList<T>>::append(&to, kitty_id);
 		<KittyOwners<T>>::insert(kitty_id, to);
 	}
+
+	fn set_kitties_count(c: T::KittyIndex) { <KittiesCount<T>>::put(c); }
 }
 
 /// Tests for Kitties module
@@ -241,6 +264,7 @@ mod tests {
 	use super::*;
 
 	use sp_core::H256;
+	#[allow(unused_imports)]
 	use frame_support::{impl_outer_origin, assert_ok, parameter_types, weights::Weight};
 	use sp_runtime::{
 		traits::{BlakeTwo256, IdentityLookup}, testing::Header, Perbill,
@@ -305,11 +329,88 @@ mod tests {
 	}
 
 	type OwnedKittiesTest = OwnedKitties<Test>;
+	type KittyModule = Module<Test>;
 
 	// This function basically just builds a genesis storage key/value store according to
 	// our desired mockup.
 	fn new_test_ext() -> sp_io::TestExternalities {
-		system::GenesisConfig::default().build_storage::<Test>().unwrap().into()
+		let mut t = system::GenesisConfig::default().build_storage::<Test>().unwrap();
+		balances::GenesisConfig::<Test> {
+			balances: vec![
+				(1, 10000),
+				(2, 10000),
+				(3, 10000),
+				(4, 10000),
+			],
+			vesting: vec![],
+		}.assimilate_storage(&mut t).unwrap();
+		t.into()
+	}
+
+	#[test]
+	fn create_kitty() {
+		new_test_ext().execute_with(|| {
+			let _ = KittyModule::create_kitty(&1);
+			assert_eq!(1, KittyModule::kitties_count());
+			if let Some(kitty) = KittyModule::kitties(0) {
+				let v: Vec<u8> = (&kitty.dna[..]).into();
+				let b = v.iter().fold(0u128, |sum, &x| { sum + x as u128 });
+				assert!(b > 0);
+			} else {
+				panic!("error")
+			}
+		});
+	}
+
+	#[test]
+	fn create_kitty_overflow() {
+		new_test_ext().execute_with(|| {
+			KittyModule::set_kitties_count(Bounded::max_value());
+			let r = KittyModule::create_kitty(&1);
+			assert_eq!(Err(Error::<Test>::KittiesCountOverflow.into()), r);
+		});
+	}
+
+	#[test]
+	fn test_transfer() {
+		new_test_ext().execute_with(|| {
+			let _ = KittyModule::create_kitty(&1);
+			assert_eq!(1, KittyModule::kitties_count());
+			KittyModule::transfer(Origin::signed(1), 0, 2);
+			assert_eq!(1, KittyModule::kitties_count());
+		});
+	}
+
+	#[test]
+	fn test_ask_buy() {
+		new_test_ext().execute_with(|| {
+			let _ = <Module<Test>>::create(Origin::signed(1));
+			assert_ok!(<Module<Test>>::ask_kitty(&1, 0, Some(1000)));
+			let p = KittyModule::kitty_price(0);
+			assert_eq!(p, Some(1000));
+			assert_ok!(<Module<Test>>::buy_kitty(&2, 0, 1000));
+		});
+	}
+
+	#[test]
+	fn breed_kitty() {
+		new_test_ext().execute_with(|| {
+			<system::Module<Test>>::set_extrinsic_index(0);
+			let _ = KittyModule::create_kitty(&1);
+
+			<system::Module<Test>>::set_extrinsic_index(1);
+			let _ = KittyModule::create_kitty(&1);
+
+			assert_eq!(2, KittyModule::kitties_count());
+			assert_eq!(KittyModule::do_breed(&1, 0, 1), Ok(2));
+			assert_eq!(3, KittyModule::kitties_count());
+			let dna1 = KittyModule::kitties(0).unwrap().dna;
+			let dna2 = KittyModule::kitties(1).unwrap().dna;
+			let dna3 = KittyModule::kitties(2).unwrap().dna;
+			assert_ne!(dna1, dna2);
+			assert_ne!(dna1, dna3);
+			assert_ne!(dna2, dna3);
+		});
 	}
 
 	#[test]
