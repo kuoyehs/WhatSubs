@@ -98,8 +98,6 @@ where
 
 	let _ = exit_send.send(());
 
-	// TODO [andre]: timeout this future #1318
-
 	use futures01::Future;
 
 	let _ = runtime.shutdown_on_idle().wait();

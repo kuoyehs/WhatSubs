@@ -1,6 +1,7 @@
 use frame_support::{StorageMap, Parameter};
 use sp_runtime::traits::Member;
 use codec::{Encode, EncodeLike, Decode, Input, Output};
+use sp_std::vec::Vec;
 
 #[cfg_attr(feature = "std", derive(Debug, PartialEq, Eq))]
 pub struct LinkedItem<Value> {
@@ -93,5 +94,19 @@ impl<Storage, Key, Value> LinkedList<Storage, Key, Value> where
 
 			Self::write(key, item.next, new_next);
 		}
+	}
+
+	pub fn collect(key: &Key, mut from: Option<Value>, mut limit: usize) -> (Option<Value>, Vec<Value>) {
+		let mut vec = Vec::new();
+		while limit > 0 {
+			if let Some(LinkedItem { prev: _, next: Some(id) }) = Storage::get((key, from)) {
+				limit -= 1;
+				vec.push(id);
+				from = Some(id);
+			} else {
+				break;
+			}
+		}
+		(from, vec)
 	}
 }

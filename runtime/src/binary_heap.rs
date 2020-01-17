@@ -273,10 +273,8 @@ mod tests {
 			for x in 0..320 {
 				let _ = Heap::push(x);
 			}
-			let mut count = 0;
 			let mut item = 0;
 			while let Some(x) = Heap::pop() {
-				count += 1;
 				assert!(item <= x, "error");
 				item = x;
 				println!("{}", item);
