@@ -181,6 +181,7 @@ impl<T: Trait> Module<T> {
 		let min: T::BlockNumber = T::MinBreedingAge::get();
 		let delta: T::BlockNumber = T::MaxLifespanDelta::get();
 		let ran: T::BlockNumber = (u128::from_be_bytes(Self::random_value(sender)) as u32).into();
+		ran < delta && ran < min
 		// TODO 随机生成猫的寿命, 如果2s一个块. 猫能活一天 86400s, 相当于 86400/2 个块. 寿命在一定范围内随机. 13~15年. 可以以注入的方式配置. 为了测试, 可以调短一点.
 		(86400 / 2).into()
 	}
@@ -263,21 +264,20 @@ impl<T: Trait> Module<T> {
 		ensure!(Self::kitty_owner(&kitty_id_2).map(|owner| owner == *sender).unwrap_or(false), Error::<T>::RequiresOwner);
 
 		// TODO 验证两只猫的年龄. 是否可以繁殖后代, 使用 MAX_BREEDING_AGE 和猫属性一起判断
-
 		let kitty_id = Self::next_kitty_id()?;
-		let kitty1_clone = kitty1.clone();
-		let kitty2_clone = kitty2.clone();
-		let kitty1_dna = kitty1.unwrap().dna;
-		let kitty2_dna = kitty2.unwrap().dna;
-		let kitty1_age = Self::block_number() - kitty1_clone.unwrap().birthday;
-  	let kitty2_age = Self::block_number() - kitty2_clone.unwrap().birthday;
+  	let kitty1_clone = kitty1.clone();
+  	let kitty2_clone = kitty2.clone();
+  	let kitty1_dna = kitty1.unwrap().dna;
+  	let kitty2_dna = kitty2.unwrap().dna;
+  	let kitty1_age = Self::block_number() - kitty1_clone.unwrap().birthday;
+    let kitty2_age = Self::block_number() - kitty2_clone.unwrap().birthday;
 
-		let max_breed_age: T::BlockNumber = T::MaxBreedingAge::get();
-		let min_breed_age: T::BlockNumber = T::MinBreedingAge::get();
-		ensure!((kitty1_age < min_breed_age), "kitty1 too young");
-  	ensure!((kitty1_age > max_breed_age), "kitty1 too old");
-  	ensure!((kitty2_age < min_breed_age), "kitty2 too young");
-  	ensure!((kitty2_age > max_breed_age), "kitty2 too old");
+  	let max_breed_age: T::BlockNumber = T::MaxBreedingAge::get();
+  	let min_breed_age: T::BlockNumber = T::MinBreedingAge::get();
+  	ensure!((kitty1_age < min_breed_age), "kitty1 too young");
+   	ensure!((kitty1_age > max_breed_age), "kitty1 too old");
+   	ensure!((kitty2_age < min_breed_age), "kitty2 too young");
+   	ensure!((kitty2_age > max_breed_age), "kitty2 too old");
 
 		// Generate a random 128bit value
 		let selector = Self::random_value(&sender);
